@@ -1,0 +1,6 @@
+[project]
+name = "manifold-analysis"
+version = "0.1.0"
+description = "Calibration analysis of Manifold and Polymarket prediction markets"
+requires-python = ">=3.12"
+dependencies = ["duckdb"]

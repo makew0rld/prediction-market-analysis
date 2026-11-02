@@ -1,0 +1,8 @@
+# Downloaded dumps and derived data are too large for git; see README to rebuild them.
+manifold_download/
+data/
+*.json
+
+# Python
+.venv/
+__pycache__/

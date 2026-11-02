@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Market Calibration</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/3.5.1/plotly-basic.min.js"></script>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11,11,11,0.10);
+  --ref: #898781;
+  /* ordinal ramps: checkpoints in blue, buckets in orange, light -> dark */
+  --seq-blue: #86b6ef,#5598e7,#2a78d6,#1c5cab,#104281;
+  --seq-orange: #f4b393,#ee8a5d,#eb6834,#c4501f,#8f3a16;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --text-primary: #f0efec;
+    --text-secondary: #c3c2b7;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255,255,255,0.10);
+    --seq-blue: #184f95,#256abf,#3987e5,#6da7ec,#b7d3f6;
+    --seq-orange: #8f3a16,#c4501f,#d95926,#ee8a5d,#f4b393;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d;
+  --surface: #1a1a19;
+  --text-primary: #f0efec;
+  --text-secondary: #c3c2b7;
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --border: rgba(255,255,255,0.10);
+  --seq-blue: #184f95,#256abf,#3987e5,#6da7ec,#b7d3f6;
+  --seq-orange: #8f3a16,#c4501f,#d95926,#ee8a5d,#f4b393;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--page); color: var(--text-primary);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+main { max-width: 1100px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 26px; margin: 0 0 4px; }
+h2 { font-size: 19px; margin: 40px 0 4px; }
+h3 { font-size: 15px; margin: 20px 0 4px; }
+p.lede, p.note { color: var(--text-secondary); margin: 0 0 12px; max-width: 75ch; }
+p.note { font-size: 13px; }
+ul.note { color: var(--text-secondary); font-size: 13px; max-width: 75ch; padding-left: 20px; }
+ul.note li { margin-bottom: 6px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
+.chip { border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; font-size: 13px; color: var(--text-secondary); background: var(--surface); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 12px; margin: 16px 0; }
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; }
+.tile .label { font-size: 13px; color: var(--text-secondary); }
+.tile .value { font-size: 26px; font-weight: 600; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-top: 12px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 440px), 1fr)); gap: 12px; }
+.grid2 .card { margin-top: 0; }
+.plot { width: 100%; height: 420px; }
+.square-card { max-width: 680px; }
+.plot.square { height: auto; aspect-ratio: 1 / 1.12; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 0; font-size: 13px; color: var(--text-secondary); }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { font: inherit; background: none; color: var(--text-secondary); border: 0; padding: 4px 10px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button[aria-pressed="true"] { background: var(--text-primary); color: var(--surface); }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 6px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+th { color: var(--text-secondary); font-weight: 500; }
+th:first-child, td:first-child { text-align: left; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title">Market calibration</h1>
+  <p class="lede">Each resolved binary market's probability is sampled at checkpoints and scored against how it resolved. A perfectly calibrated market sits on the diagonal: of markets at 60%, 60% resolve YES.</p>
+  <div class="chips" id="filters"></div>
+  <div class="tiles" id="tiles"></div>
+
+  <h2>Calibration</h2>
+  <p class="note">Checkpoints are either a fraction of each market's lifetime, or a fixed number of days after creation. Lifetime checkpoints are distorted by markets that resolve YES as soon as their event happens: their checkpoints land just before the event. Day checkpoints avoid this, but only include markets still open on that day, so later days cover fewer, longer markets.</p>
+  <p class="note">Markets are grouped into bins centred on round probabilities (the 60% bin holds markets at 55–65%). Each dot sits at the bin's average market probability. The bars show how far a dot could land from the true rate by luck alone (Wilson 95% intervals). Marker area scales with the number of markets. Click legend entries to hide checkpoints.</p>
+  <div class="card square-card"><div class="controls" id="calib-controls"></div><div class="plot square" id="calib"></div></div>
+
+  <h2>Accuracy over a market's lifetime</h2>
+  <div class="grid2">
+    <div class="card">
+      <div class="controls" id="score-controls"></div>
+      <div class="plot" id="score"></div>
+    </div>
+    <div class="card">
+      <div class="controls" id="hist-controls"></div>
+      <div class="plot" id="hist"></div>
+    </div>
+  </div>
+  <div class="card table-wrap"><table id="summary-table"></table></div>
+  <p class="note">Brier: the mean of (probability − outcome)², where the outcome is 1 for YES and 0 for NO. Lower is better; always guessing 50% scores 0.25. Lifetime checkpoints score the same markets every time, so their Brier scores are directly comparable. Day checkpoints drop markets that have already closed, so later days are a different, smaller set of markets.</p>
+
+  <div id="slices"></div>
+
+  <h2>Data &amp; methodology</h2>
+  <ul class="note" id="method"></ul>
+  <div class="card table-wrap" id="resolution-card" hidden><table id="resolution-table"></table></div>
+
+  <p class="note" style="margin-top:40px">Generated <span id="generated"></span>.</p>
+</main>
+
+<script>
+const DATA = /*DATA*/null;
+
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const fmt = (v, d = 3) => v == null ? "–" : Number(v).toFixed(d);
+const pct = v => (100 * v).toFixed(0) + "%";
+const big = v => Number(v).toLocaleString("en-US", {maximumFractionDigits: 0});
+
+function ramp(name, n) {
+  const steps = css(name).split(",").map(s => s.trim());
+  if (n === 1) return [steps[2]];
+  return Array.from({length: n}, (_, i) => steps[Math.round(i * (steps.length - 1) / (n - 1))]);
+}
+
+function layout(extra) {
+  const axis = {
+    gridcolor: css("--grid"), linecolor: css("--axis"), zerolinecolor: css("--axis"),
+    tickfont: {color: css("--text-muted")}, title: {font: {color: css("--text-secondary"), size: 13}},
+    automargin: true,
+  };
+  const base = {
+    paper_bgcolor: css("--surface"), plot_bgcolor: css("--surface"),
+    font: {family: 'system-ui, -apple-system, "Segoe UI", sans-serif', color: css("--text-primary"), size: 13},
+    margin: {l: 56, r: 16, t: 16, b: 48},
+    legend: {orientation: "h", y: -0.18, font: {color: css("--text-secondary")}},
+    hoverlabel: {bgcolor: css("--surface"), bordercolor: css("--axis"), font: {color: css("--text-primary")}},
+    xaxis: {...axis}, yaxis: {...axis},
+  };
+  for (const k of ["xaxis", "yaxis"]) if (extra[k]) { base[k] = {...base[k], ...extra[k], title: {...base[k].title, ...(extra[k].title || {})}}; delete extra[k]; }
+  return {...base, ...extra};
+}
+const config = {responsive: true, displaylogo: false, modeBarButtonsToRemove: ["lasso2d", "select2d"]};
+
+const MODES = [["lifetime", "% of lifetime"], ["days", "Days since creation"]];
+const cps = mode => DATA.meta.checkpoints[mode];
+const middle = mode => cps(mode)[Math.floor(cps(mode).length / 2)];
+const cpLabel = (mode, f) => mode === "lifetime" ? `${pct(f)} through` : `Day ${big(f)}`;
+const cpShort = (mode, f) => mode === "lifetime" ? pct(f) : `${big(f)}d`;
+const ofMode = (rows, mode) => rows.filter(r => r.mode === mode);
+
+function segmented(el, options, initial, onChange) {
+  el.innerHTML = "";
+  for (const [value, label] of options) {
+    const b = document.createElement("button");
+    b.type = "button"; b.textContent = label;
+    b.setAttribute("aria-pressed", value === initial);
+    b.onclick = () => {
+      for (const x of el.children) x.setAttribute("aria-pressed", x === b);
+      onChange(value);
+    };
+    el.appendChild(b);
+  }
+}
+
+// Renders a lifetime/days switch into `el`, plus a checkpoint switch when st.f
+// is tracked, and redraws via draw() whenever either changes.
+function picker(el, st, draw) {
+  const withCp = "f" in st;
+  el.innerHTML = `${withCp ? "Checkpoint" : "Checkpoints"} <span class="seg"></span>${withCp ? ' <span class="seg"></span>' : ""}`;
+  const [modeEl, cpEl] = el.querySelectorAll(".seg");
+  const drawCps = () => withCp && segmented(cpEl, cps(st.mode).map(f => [f, cpShort(st.mode, f)]), st.f, v => { st.f = v; draw(); });
+  segmented(modeEl, MODES, st.mode, v => { st.mode = v; if (withCp) st.f = middle(v); drawCps(); draw(); });
+  drawCps();
+  draw();
+}
+
+function calibTraces(calib, groups, groupKey, colors, nameOf) {
+  const maxN = Math.max(...calib.map(r => r.n));
+  const traces = [{
+    x: [0, 1], y: [0, 1], mode: "lines", name: "Perfect calibration", hoverinfo: "skip",
+    line: {color: css("--ref"), width: 1, dash: "dot"},
+  }];
+  groups.forEach((g, i) => {
+    const rs = calib.filter(r => r[groupKey] === g);
+    traces.push({
+      x: rs.map(r => r.mean_p), y: rs.map(r => r.yes_rate),
+      customdata: rs.map(r => [r.n, r.lo, r.hi]),
+      mode: "lines+markers", name: nameOf(g),
+      line: {color: colors[i], width: 2},
+      marker: {color: colors[i], size: rs.map(r => 8 + 14 * Math.sqrt(r.n / maxN)), line: {color: css("--surface"), width: 2}},
+      error_y: {type: "data", symmetric: false, array: rs.map(r => r.hi - r.yes_rate), arrayminus: rs.map(r => r.yes_rate - r.lo), color: colors[i], thickness: 1, width: 0},
+      hovertemplate: `<b>${nameOf(g)}</b><br>Avg. market probability %{x:.1%}<br>Resolved YES %{y:.1%} (%{customdata[1]:.1%}–%{customdata[2]:.1%})<br>%{customdata[0]:,} markets<extra></extra>`,
+    });
+  });
+  return traces;
+}
+const calibLayout = () => layout({
+  xaxis: {title: {text: "Market probability"}, range: [0, 1], tickformat: ".0%", dtick: 0.1},
+  yaxis: {title: {text: "Resolved YES"}, range: [0, 1], tickformat: ".0%", dtick: 0.1, scaleanchor: "x", constrain: "domain"},
+});
+
+function render() {
+  const m = DATA.meta, platform = m.platform;
+
+  document.title = `${platform.name} Calibration`;
+  document.getElementById("title").textContent = `${platform.name} market calibration`;
+  document.getElementById("method").innerHTML = platform.notes.map(n => `<li>${n}</li>`).join("");
+  if (platform.resolution_counts) {
+    document.getElementById("resolution-card").hidden = false;
+    document.getElementById("resolution-table").innerHTML = "<tr><th>Closed Yes/No markets in the dataset</th><th>Markets</th></tr>" +
+      platform.resolution_counts.map(r => `<tr><td>${r.label}</td><td>${big(r.markets)}</td></tr>`).join("");
+  }
+
+  document.getElementById("generated").textContent = m.generated;
+  const chips = Object.entries(m.filters).map(([k, v]) => `<span class="chip">${k}: ${v}</span>`);
+  document.getElementById("filters").innerHTML = chips.length ? chips.join("") : '<span class="chip">no filters</span>';
+  document.getElementById("tiles").innerHTML = [
+    ["Markets", big(m.markets)], ["Resolved YES", (100 * m.base_rate).toFixed(1) + "%"],
+    ["Created", `${m.first_created} – ${m.last_created}`], ["Median length", `${big(m.median_days)} days`],
+    ["Median traders", big(m.median_traders)], ["Median volume", platform.currency + big(m.median_volume)],
+  ].map(([l, v]) => `<div class="tile"><div class="label">${l}</div><div class="value">${v}</div></div>`).join("");
+
+  picker(document.getElementById("calib-controls"), state.calib, () => {
+    const mode = state.calib.mode;
+    Plotly.react("calib", calibTraces(ofMode(DATA.calib, mode), cps(mode), "f", ramp("--seq-blue", cps(mode).length), f => cpLabel(mode, f)), calibLayout(), config);
+  });
+
+  picker(document.getElementById("score-controls"), state.score, () => {
+    const mode = state.score.mode, rs = ofMode(DATA.summary, mode);
+    const color = ramp("--seq-blue", 5)[4];
+    Plotly.react("score", [{
+      x: rs.map(r => r.f), y: rs.map(r => r.brier), customdata: rs.map(r => [cpLabel(mode, r.f), r.n]),
+      mode: "lines+markers", line: {color, width: 2}, marker: {color, size: 8, line: {color: css("--surface"), width: 2}},
+      hovertemplate: "%{customdata[0]}<br>Brier %{y:.4f}<br>%{customdata[1]:,} markets<extra></extra>",
+    }], layout({
+      showlegend: false,
+      xaxis: mode === "lifetime"
+        ? {title: {text: "Fraction of market lifetime"}, tickformat: ".0%", tickvals: cps(mode)}
+        : {title: {text: "Days since creation"}, type: "log", tickvals: cps(mode), ticktext: cps(mode).map(f => big(f))},
+      yaxis: {title: {text: "Brier score (lower is better)"}},
+    }), config);
+    const head = "<tr><th>Checkpoint</th><th>Markets</th><th>Avg. forecast</th><th>Brier</th></tr>";
+    document.getElementById("summary-table").innerHTML = head + rs.map(r =>
+      `<tr><td>${cpLabel(mode, r.f)}</td><td>${big(r.n)}</td><td>${pct(r.mean_p)}</td><td>${fmt(r.brier, 4)}</td></tr>`
+    ).join("");
+  });
+
+  picker(document.getElementById("hist-controls"), state.hist, () => {
+    const {mode, f} = state.hist;
+    const rs = ofMode(DATA.hist, mode).filter(r => r.f === f);
+    Plotly.react("hist", [{
+      type: "bar", x: rs.map(r => (r.bin + 0.5) / 50), y: rs.map(r => r.n), width: 1 / 50 * 0.9,
+      marker: {color: ramp("--seq-blue", cps(mode).length)[cps(mode).indexOf(f)]},
+      customdata: rs.map(r => [r.bin / 50, (r.bin + 1) / 50]),
+      hovertemplate: "%{customdata[0]:.0%}–%{customdata[1]:.0%}<br>%{y:,} markets<extra></extra>",
+    }], layout({
+      showlegend: false, bargap: 0,
+      xaxis: {title: {text: `Market probability, ${cpLabel(mode, f).toLowerCase()}`}, range: [0, 1], tickformat: ".0%"},
+      yaxis: {title: {text: "Markets"}},
+    }), config);
+  });
+
+  renderSlices();
+}
+
+function renderSlices() {
+  const root = document.getElementById("slices");
+  root.innerHTML = "";
+  for (const [name, s] of Object.entries(DATA.slices)) {
+    const id = name.replace(/\W/g, "");
+    const groups = s.buckets.map(b => b.bucket);
+    const colors = ramp("--seq-orange", groups.length);
+    const unit = name === "volume" || name === "liquidity" ? DATA.meta.platform.currency : "";
+    const label = b => { const x = s.buckets.find(y => y.bucket === b); return `${unit}${big(x.lo)}–${unit}${big(x.hi)} ${name}`; };
+    root.insertAdjacentHTML("beforeend", `
+      <h2>By ${name}</h2>
+      <p class="note">Markets split into ${groups.length} equal-sized buckets by ${name}. The buckets hold different questions, so compare how close each line sits to the diagonal rather than their Brier scores.</p>
+      <div class="card square-card"><div class="controls" id="ctl-${id}"></div><div class="plot square" id="calib-${id}"></div></div>`);
+
+    state.slices[name] ??= {mode: "lifetime", f: middle("lifetime")};
+    const st = state.slices[name];
+    picker(document.getElementById(`ctl-${id}`), st, () => Plotly.react(`calib-${id}`,
+      calibTraces(ofMode(s.calib, st.mode).filter(r => r.f === st.f), groups, "bucket", colors, label), calibLayout(), config));
+  }
+}
+
+const state = {
+  calib: {mode: "lifetime"},
+  score: {mode: "lifetime"},
+  hist: {mode: "lifetime", f: middle("lifetime")},
+  slices: {},
+};
+render();
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
+</script>
+</body>
+</html>
